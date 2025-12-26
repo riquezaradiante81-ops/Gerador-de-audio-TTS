@@ -204,7 +204,7 @@ export default function App() {
       <header className="relative z-20 w-full glass-card border-b border-white/20 p-4 shrink-0">
         <div className="max-w-7xl mx-auto flex flex-col items-center gap-4">
           <h1 className="text-xl md:text-2xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-pink-100 to-white">
-            Assim eu Consigo Gerar Áudios TTS
+            Edson Automação Gerador de Áudio TTS
           </h1>
           <div className="flex flex-wrap justify-center gap-3 w-full max-w-4xl">
             <button onClick={generateAll} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">

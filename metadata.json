@@ -1,5 +1,5 @@
 {
-  "name": "Assim eu Consigo Gerar Áudios TTS",
+  "name": "Edson Automação Gerador de Áudio TTS",
   "description": "Uma aplicação avançada de conversão de texto em fala (TTS) com controles globais de estilo, sotaque e velocidade, utilizando o modelo Gemini 2.5 Flash TTS.",
   "requestFramePermissions": [
     "microphone"
