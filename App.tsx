@@ -21,12 +21,15 @@ export default function App() {
   const currentAudioSource = useRef<AudioBufferSourceNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Verifica se a chave API já foi selecionada ao carregar
   useEffect(() => {
     const checkKey = async () => {
       // @ts-ignore
-      const hasKey = await window.aistudio.hasSelectedApiKey();
-      setIsKeyConfigured(hasKey);
+      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        setIsKeyConfigured(hasKey);
+      } else {
+        setIsKeyConfigured(!!process.env.API_KEY);
+      }
     };
     checkKey();
   }, []);
@@ -34,9 +37,12 @@ export default function App() {
   const handleSelectKey = async () => {
     try {
       // @ts-ignore
-      await window.aistudio.openSelectKey();
-      // Assume sucesso após o trigger do diálogo conforme regras
-      setIsKeyConfigured(true);
+      if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+        await window.aistudio.openSelectKey();
+        // Após abrir o seletor, assumimos que o usuário procederá.
+        // O SDK injetará a chave no process.env.API_KEY automaticamente.
+        setIsKeyConfigured(true);
+      }
     } catch (err) {
       console.error("Erro ao selecionar chave:", err);
     }
@@ -58,66 +64,6 @@ export default function App() {
     setBlocks(prev => prev.map(b => ({ ...b, isPlaying: false })));
   }, []);
 
-  const playBlock = useCallback(async (id: string) => {
-    stopAllPlayback();
-    const block = blocks.find(b => b.id === id);
-    if (!block?.audioData) return;
-
-    const ctx = getAudioContext();
-    const buffer = await decodeAudioToBuffer(block.audioData, ctx);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    
-    setBlocks(prev => prev.map(b => b.id === id ? { ...b, isPlaying: true } : b));
-    
-    source.onended = () => {
-      setBlocks(prev => prev.map(b => b.id === id ? { ...b, isPlaying: false } : b));
-    };
-
-    source.start();
-    currentAudioSource.current = source;
-  }, [blocks, stopAllPlayback]);
-
-  const playAllSequentially = useCallback(async () => {
-    if (isPlayingAll) {
-      stopAllPlayback();
-      return;
-    }
-
-    const playableBlocks = blocks.filter(b => b.audioData);
-    if (playableBlocks.length === 0) return;
-
-    setIsPlayingAll(true);
-    const ctx = getAudioContext();
-
-    for (const block of playableBlocks) {
-      if (!block.audioData) continue;
-      
-      const buffer = await decodeAudioToBuffer(block.audioData, ctx);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      
-      setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, isPlaying: true } : b));
-      
-      const playPromise = new Promise(resolve => {
-        source.onended = () => {
-          setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, isPlaying: false } : b));
-          resolve(null);
-        };
-      });
-
-      source.start();
-      currentAudioSource.current = source;
-      await playPromise;
-
-      if (!currentAudioSource.current) break;
-    }
-
-    setIsPlayingAll(false);
-  }, [blocks, isPlayingAll, stopAllPlayback]);
-
   const generateBlockAudio = useCallback(async (id: string) => {
     const block = blocks.find(b => b.id === id);
     if (!block || !block.text.trim()) return;
@@ -135,20 +81,40 @@ export default function App() {
         isGenerating: false 
       } : b));
     } catch (error: any) {
-      const errorMessage = error.message || "Erro desconhecido";
-      
-      // Se o erro indicar que a entidade não foi encontrada ou problema de chave, reinicia o fluxo
-      if (errorMessage.includes("not found") || errorMessage.includes("API Key")) {
-        setIsKeyConfigured(false);
-      }
+      const errorMessage = error.message || "";
+      console.error("Erro na geração:", error);
 
-      setBlocks(prev => prev.map(b => b.id === id ? { 
-        ...b, 
-        isGenerating: false, 
-        error: "Erro de API: Selecione uma chave válida no topo." 
-      } : b));
+      if (errorMessage.includes("API Key") || errorMessage.includes("not found") || errorMessage.includes("403")) {
+        setIsKeyConfigured(false);
+        setBlocks(prev => prev.map(b => b.id === id ? { 
+          ...b, 
+          isGenerating: false, 
+          error: "Erro de Autenticação: Clique em 'TROCAR CHAVE' no topo." 
+        } : b));
+      } else {
+        setBlocks(prev => prev.map(b => b.id === id ? { 
+          ...b, 
+          isGenerating: false, 
+          error: "Ocorreu um erro. Verifique sua chave e saldo no Google Cloud." 
+        } : b));
+      }
     }
   }, [blocks, settings]);
+
+  const playBlock = useCallback(async (id: string) => {
+    stopAllPlayback();
+    const block = blocks.find(b => b.id === id);
+    if (!block?.audioData) return;
+    const ctx = getAudioContext();
+    const buffer = await decodeAudioToBuffer(block.audioData, ctx);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    setBlocks(prev => prev.map(b => b.id === id ? { ...b, isPlaying: true } : b));
+    source.onended = () => setBlocks(prev => prev.map(b => b.id === id ? { ...b, isPlaying: false } : b));
+    source.start();
+    currentAudioSource.current = source;
+  }, [blocks, stopAllPlayback]);
 
   const generateAll = useCallback(async () => {
     for (const block of blocks) {
@@ -160,16 +126,13 @@ export default function App() {
 
   const addBlock = useCallback((afterId?: string) => {
     const newBlock = { id: uuidv4(), text: '', isGenerating: false, isPlaying: false };
-    if (!afterId) {
-      setBlocks(prev => [...prev, newBlock]);
-    } else {
-      setBlocks(prev => {
-        const index = prev.findIndex(b => b.id === afterId);
-        const next = [...prev];
-        next.splice(index + 1, 0, newBlock);
-        return next;
-      });
-    }
+    if (!afterId) setBlocks(prev => [...prev, newBlock]);
+    else setBlocks(prev => {
+      const index = prev.findIndex(b => b.id === afterId);
+      const next = [...prev];
+      next.splice(index + 1, 0, newBlock);
+      return next;
+    });
   }, []);
 
   const removeBlock = useCallback((id: string) => {
@@ -192,7 +155,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'audios_tts.zip';
+    a.download = 'audios_edson_automacao.zip';
     a.click();
   }, [blocks]);
 
@@ -203,13 +166,12 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'faixa_completa.wav';
+    a.download = 'faixa_completa_edson.wav';
     a.click();
   }, [blocks]);
 
   const playPreview = useCallback(async () => {
-    const previewText = "Olá, esta é uma prévia da minha voz.";
-    setBlocks(prev => [...prev, { id: 'preview', text: previewText, isGenerating: true, isPlaying: false }]);
+    const previewText = "Olá, esta é uma prévia da voz selecionada.";
     try {
       const pcmData = await generateTTS(previewText, settings);
       const ctx = getAudioContext();
@@ -220,199 +182,190 @@ export default function App() {
       source.start();
     } catch (e) {
       setIsKeyConfigured(false);
-    } finally {
-      setBlocks(prev => prev.filter(b => b.id !== 'preview'));
     }
   }, [settings]);
 
-  return (
-    <div className="relative h-screen w-full flex flex-col overflow-hidden bg-black">
-      {/* Background Elements */}
-      <div className="fixed inset-0 bg-[length:400%_400%] animate-gradient-move bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 z-0"></div>
-      
-      {/* Modal de Seleção de Chave API */}
-      {isKeyConfigured === false && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="glass-card max-w-md w-full p-8 rounded-3xl text-center border-2 border-pink-500/30 animate-float">
-            <div className="w-20 h-20 bg-pink-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-              <i className="fa-solid fa-key text-3xl text-pink-500"></i>
+  if (isKeyConfigured === false) {
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black overflow-y-auto py-10">
+        <div className="absolute inset-0 bg-[length:400%_400%] animate-gradient-move bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 opacity-50"></div>
+        <div className="relative glass-card max-w-2xl w-full p-8 md:p-12 rounded-[2.5rem] border-2 border-pink-500/40 shadow-2xl animate-fade-in mx-4">
+          <div className="flex flex-col md:flex-row gap-8 items-center">
+            <div className="w-full md:w-1/3 text-center">
+              <div className="w-24 h-24 bg-gradient-to-tr from-pink-600 to-purple-600 rounded-3xl flex items-center justify-center mx-auto mb-6 rotate-12 shadow-2xl">
+                <i className="fa-solid fa-key text-4xl text-white -rotate-12"></i>
+              </div>
+              <h2 className="text-2xl font-black text-white uppercase tracking-tighter">Acesso<br/><span className="text-pink-400">Premium</span></h2>
             </div>
-            <h2 className="text-2xl font-bold mb-4">Configuração Necessária</h2>
-            <p className="text-gray-300 mb-6 leading-relaxed">
-              Para gerar áudios com alta qualidade, você precisa selecionar uma <strong>Chave API paga</strong> do Google Cloud.
-            </p>
-            <div className="space-y-4">
+            
+            <div className="flex-1 space-y-6">
+              <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
+                <h3 className="text-pink-400 font-bold text-sm uppercase tracking-widest mb-4">Como Ativar:</h3>
+                <ul className="space-y-4 text-xs text-gray-300">
+                  <li className="flex gap-3"><span className="w-5 h-5 bg-pink-500 rounded-full flex shrink-0 items-center justify-center text-white font-bold">1</span> <span>Tenha uma chave no <b>Google AI Studio</b> com faturamento ativo.</span></li>
+                  <li className="flex gap-3"><span className="w-5 h-5 bg-pink-500 rounded-full flex shrink-0 items-center justify-center text-white font-bold">2</span> <span>Clique no botão abaixo para abrir o seletor oficial do Google.</span></li>
+                  <li className="flex gap-3"><span className="w-5 h-5 bg-pink-500 rounded-full flex shrink-0 items-center justify-center text-white font-bold">3</span> <span>Escolha sua chave na lista e o app será liberado na hora.</span></li>
+                </ul>
+              </div>
+
               <button 
                 onClick={handleSelectKey}
-                className="w-full bg-pink-600 hover:bg-pink-500 py-4 rounded-2xl font-bold text-lg shadow-xl shadow-pink-600/20 transition-all active:scale-95"
+                className="w-full bg-white text-black hover:bg-pink-100 py-5 rounded-2xl font-black text-lg transition-all active:scale-95 shadow-xl uppercase tracking-tighter"
               >
-                Selecionar Chave API
+                Configurar Chave API Agora
               </button>
-              <a 
-                href="https://ai.google.dev/gemini-api/docs/billing" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="block text-xs text-pink-400 hover:underline opacity-60"
-              >
-                Saiba mais sobre o faturamento da API <i className="fa-solid fa-external-link ml-1"></i>
-              </a>
+
+              <div className="flex justify-between items-center text-[10px] text-white/30 uppercase tracking-widest">
+                <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="hover:text-pink-400 underline decoration-pink-500/50">Tutorial de Faturamento</a>
+                <span>Edson Automação © 2024</span>
+              </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {/* Header Section */}
+  return (
+    <div className="relative h-screen w-full flex flex-col overflow-hidden bg-black">
+      <div className="fixed inset-0 bg-[length:400%_400%] animate-gradient-move bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 z-0"></div>
+      
       <header className="relative z-20 w-full glass-card border-b border-white/20 p-4 shrink-0">
         <div className="max-w-7xl mx-auto flex flex-col items-center gap-4">
           <div className="flex items-center justify-between w-full">
-            <div className="w-24 hidden md:block"></div>
-            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-pink-100 to-white">
-              Edson Automação Gerador de Áudio TTS
+            <div className="flex items-center gap-2 md:w-48">
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+              <span className="text-[10px] text-green-400 font-bold tracking-tighter uppercase">Motor TTS Ativo</span>
+            </div>
+            <h1 className="text-xl md:text-2xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-white via-pink-200 to-white uppercase">
+              Edson Automação <span className="font-light text-pink-400">TTS</span>
             </h1>
-            <button 
-              onClick={handleSelectKey}
-              className={`text-[10px] px-3 py-1 rounded-full border flex items-center gap-2 transition-all ${isKeyConfigured ? 'border-green-500/50 text-green-400' : 'border-red-500/50 text-red-400'}`}
-            >
-              <div className={`w-1.5 h-1.5 rounded-full ${isKeyConfigured ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-              {isKeyConfigured ? 'API ATIVA' : 'CONFIGURAR API'}
-            </button>
+            <div className="md:w-48 flex justify-end">
+              <button 
+                onClick={handleSelectKey}
+                className="text-[9px] px-4 py-2 rounded-full bg-pink-500/10 border border-pink-500/30 hover:bg-pink-500/20 text-pink-300 font-bold transition-all flex items-center gap-2 uppercase tracking-tighter"
+              >
+                <i className="fa-solid fa-key"></i> Trocar Chave API
+              </button>
+            </div>
           </div>
           
-          <div className="flex flex-wrap justify-center gap-3 w-full max-w-4xl">
-            <button onClick={generateAll} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">
-              <i className="fa-solid fa-wand-sparkles"></i> Gerar Todos
+          <div className="flex flex-wrap justify-center gap-2 w-full max-w-5xl">
+            <button onClick={generateAll} className="glass-btn flex-1 min-w-[120px] py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider">
+              <i className="fa-solid fa-wand-sparkles text-pink-400"></i> Gerar Tudo
             </button>
-            <button onClick={playAllSequentially} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">
-              <i className={`fa-solid ${isPlayingAll ? 'fa-stop' : 'fa-play'}`}></i>
-              {isPlayingAll ? 'Parar' : 'Ouvir Todos'}
-            </button>
-            <button onClick={downloadZip} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-pink-300">
+            <button onClick={downloadZip} className="glass-btn flex-1 min-w-[120px] py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider text-pink-300">
               <i className="fa-solid fa-file-zipper"></i> ZIP
             </button>
-            <button onClick={downloadSingleTrack} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-pink-300">
-              <i className="fa-solid fa-file-audio"></i> TRACK
+            <button onClick={downloadSingleTrack} className="glass-btn flex-1 min-w-[120px] py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider text-pink-300">
+              <i className="fa-solid fa-music"></i> Faixa Única
             </button>
-            <button onClick={clearAll} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-red-400">
+            <button onClick={clearAll} className="glass-btn flex-1 min-w-[120px] py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider text-red-400/80">
               <i className="fa-solid fa-trash-can"></i> Limpar
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Content Area */}
       <main className="relative z-10 flex flex-col md:flex-row flex-1 overflow-hidden h-full">
-        
-        {/* Left Column: Settings */}
-        <aside className="w-full md:w-[320px] lg:w-[400px] glass-card border-r border-white/20 p-6 overflow-y-auto shrink-0 md:h-full">
-          <h2 className="text-lg font-semibold mb-6 flex items-center gap-2 text-pink-300">
-            <i className="fa-solid fa-sliders"></i> Configurações
+        <aside className="w-full md:w-[320px] lg:w-[380px] glass-card border-r border-white/20 p-6 overflow-y-auto shrink-0 md:h-full">
+          <h2 className="text-sm font-black mb-6 flex items-center gap-2 text-white/60 uppercase tracking-widest">
+            <i className="fa-solid fa-sliders text-pink-500"></i> Parâmetros de Voz
           </h2>
           
-          <div className="space-y-6 pb-10">
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Voz</label>
+          <div className="space-y-6 pb-20">
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Voz Premium</label>
               <div className="flex gap-2">
-                <select 
-                  value={settings.voice}
-                  onChange={(e) => setSettings({...settings, voice: e.target.value})}
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors"
-                >
-                  {VOICES.map(v => <option key={v} value={v} className="bg-slate-900">{v}</option>)}
+                <select value={settings.voice} onChange={(e) => setSettings({...settings, voice: e.target.value})} className="flex-1 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-pink-500/50 appearance-none text-white">
+                  {VOICES.map(v => <option key={v} value={v} className="bg-slate-950">{v}</option>)}
                 </select>
-                <button onClick={playPreview} className="glass-btn p-2 rounded-xl text-pink-400 aspect-square flex items-center justify-center">
-                  <i className="fa-solid fa-volume-high"></i>
-                </button>
+                <button onClick={playPreview} className="glass-btn w-12 rounded-xl text-pink-400 flex items-center justify-center shadow-lg"><i className="fa-solid fa-play text-xs"></i></button>
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Velocidade ({settings.speed.toFixed(2)}x)</label>
-              <div className="flex items-center gap-3">
-                <button onClick={() => setSettings(s => ({...s, speed: Math.max(0.5, s.speed - 0.25)}))} className="glass-btn w-10 h-10 rounded-xl flex items-center justify-center">-</button>
-                <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden relative">
-                   <div className="absolute h-full bg-gradient-to-r from-pink-500 to-purple-500 transition-all duration-300" style={{ width: `${((settings.speed - 0.5) / 2.5) * 100}%` }}></div>
-                </div>
-                <button onClick={() => setSettings(s => ({...s, speed: Math.min(3, s.speed + 0.25)}))} className="glass-btn w-10 h-10 rounded-xl flex items-center justify-center">+</button>
+            <div className="space-y-4">
+              <div className="flex justify-between items-end">
+                <label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Ritmo</label>
+                <span className="text-xs font-mono text-pink-400">{settings.speed.toFixed(2)}x</span>
               </div>
+              <input type="range" min="0.5" max="2.5" step="0.1" value={settings.speed} onChange={(e) => setSettings({...settings, speed: parseFloat(e.target.value)})} className="w-full accent-pink-500 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
             </div>
 
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Temperatura</label>
-              <input type="range" min="0" max="3" step="0.5" value={settings.temperature} onChange={(e) => setSettings({...settings, temperature: parseFloat(e.target.value)})} className="w-full accent-pink-500 cursor-pointer h-2 bg-white/10 rounded-full appearance-none" />
-              <div className="flex justify-between mt-2">
-                <span className="text-[10px] text-gray-500 italic">Neutro</span>
-                <span className="text-[10px] text-gray-500 italic">Emocional</span>
+            <div className="space-y-4">
+              <div className="flex justify-between items-end">
+                <label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Emoção</label>
+                <span className="text-[9px] text-white/40">{(settings.temperature * 100).toFixed(0)}%</span>
               </div>
+              <input type="range" min="0" max="3" step="0.5" value={settings.temperature} onChange={(e) => setSettings({...settings, temperature: parseFloat(e.target.value)})} className="w-full accent-purple-500 h-1 bg-white/10 rounded-full appearance-none cursor-pointer" />
             </div>
 
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Estilo</label>
-              <textarea value={settings.style} onChange={(e) => setSettings({...settings, style: e.target.value})} placeholder="Ex: Alegre, sério..." className="w-full h-20 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors resize-none" />
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Estilo do Locutor</label>
+              <textarea value={settings.style} onChange={(e) => setSettings({...settings, style: e.target.value})} placeholder="Ex: Entusiasmado, calmo, misterioso..." className="w-full h-24 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-pink-500/50 resize-none placeholder:text-white/10 text-white" />
             </div>
 
-            <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Sotaque</label>
-              <input type="text" value={settings.accent} onChange={(e) => setSettings({...settings, accent: e.target.value})} placeholder="Ex: Carioca, Nordestino..." className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors" />
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Sotaque</label>
+              <input type="text" value={settings.accent} onChange={(e) => setSettings({...settings, accent: e.target.value})} placeholder="Ex: Brasil, Portugal, Angola..." className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-pink-500/50 placeholder:text-white/10 text-white" />
             </div>
           </div>
         </aside>
 
-        {/* Right Column: Audio Blocks */}
         <section className="flex-1 p-4 md:p-8 overflow-y-auto h-full space-y-6 pb-40">
           {blocks.map((block, index) => (
-            <div key={block.id} className={`glass-card p-6 rounded-2xl border-t border-white/20 relative group transition-all duration-300 ${block.isGenerating ? 'animate-pulse' : ''}`}>
+            <div key={block.id} className={`glass-card p-6 rounded-[2.5rem] border-t border-white/20 transition-all duration-500 ${block.isGenerating ? 'ring-2 ring-pink-500/50' : ''}`}>
               <div className="flex flex-col lg:flex-row gap-6">
                 <div className="flex-1 space-y-4">
                    <div className="flex items-center justify-between">
-                     <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded-full text-gray-400 font-medium">TRECHO #{index + 1}</span>
-                     {block.error && <span className="text-[10px] text-red-400 font-medium bg-red-500/10 px-2 py-0.5 rounded-full"><i className="fa-solid fa-circle-exclamation mr-1"></i>{block.error}</span>}
+                     <span className="text-[9px] bg-white/5 border border-white/10 px-3 py-1 rounded-full text-white/40 font-black tracking-widest uppercase">Trecho #{String(index + 1).padStart(2, '0')}</span>
+                     {block.error && <span className="text-[9px] text-red-400 font-bold bg-red-500/10 px-3 py-1 rounded-full uppercase"><i className="fa-solid fa-triangle-exclamation mr-1"></i>{block.error}</span>}
                    </div>
-                   <textarea value={block.text} onChange={(e) => updateBlockText(block.id, e.target.value)} placeholder="Digite o texto aqui..." className="w-full h-24 bg-transparent border-none outline-none text-white text-base placeholder:text-white/20 resize-none font-light leading-relaxed" />
+                   <textarea value={block.text} onChange={(e) => updateBlockText(block.id, e.target.value)} placeholder="Digite o texto aqui..." className="w-full h-28 bg-transparent border-none outline-none text-white text-lg placeholder:text-white/5 resize-none font-medium leading-relaxed" />
+                  
                   {block.audioUrl && (
-                    <div className="flex flex-col sm:flex-row items-center gap-4 bg-white/5 p-3 rounded-xl border border-white/10 animate-fade-in">
-                      <div className="flex items-center gap-3 flex-1 w-full">
-                        <button onClick={() => playBlock(block.id)} className="w-10 h-10 rounded-full bg-pink-600 flex items-center justify-center text-white shadow-lg shadow-pink-500/20 hover:scale-110 transition-transform">
-                          <i className={`fa-solid ${block.isPlaying ? 'fa-stop' : 'fa-play'}`}></i>
-                        </button>
-                        <div className="flex-1 flex items-center gap-1 h-6">
-                              {[0.4, 0.7, 0.2, 0.9, 0.5, 0.3, 0.8, 0.4, 0.6, 0.3, 0.7].map((h, i) => (
-                                <div key={i} className={`w-1 bg-pink-400 rounded-full transition-all duration-300 ${block.isPlaying ? 'animate-bounce' : 'h-[30%]'}`} style={{ height: block.isPlaying ? 'auto' : `${h*100}%`, animationDelay: `${i * 0.1}s` }}></div>
-                              ))}
-                        </div>
+                    <div className="flex flex-col sm:flex-row items-center gap-4 bg-black/40 p-4 rounded-2xl border border-white/5">
+                      <button onClick={() => playBlock(block.id)} className="w-12 h-12 rounded-2xl bg-gradient-to-br from-pink-600 to-purple-700 flex items-center justify-center text-white shadow-xl hover:scale-105 active:scale-95 transition-all">
+                        <i className={`fa-solid ${block.isPlaying ? 'fa-square' : 'fa-play'} text-sm`}></i>
+                      </button>
+                      <div className="flex-1 h-8 flex items-end gap-1 px-2">
+                        {[0.3, 0.6, 0.2, 0.8, 0.4, 0.9, 0.5, 0.7, 0.3, 0.6, 0.4].map((h, i) => (
+                          <div key={i} className={`flex-1 bg-gradient-to-t from-pink-500 to-purple-400 rounded-full transition-all duration-300 ${block.isPlaying ? 'animate-pulse' : 'h-[20%]'}`} style={{ height: block.isPlaying ? `${h * 100}%` : '20%', animationDelay: `${i * 0.05}s` }}></div>
+                        ))}
                       </div>
-                      <a href={block.audioUrl} download={`audio_${index + 1}.wav`} className="glass-btn p-2 rounded-lg text-xs flex items-center gap-2">
-                        <i className="fa-solid fa-download"></i> Baixar
+                      <a href={block.audioUrl} download={`audio_edson_${index + 1}.wav`} className="text-[10px] font-black uppercase tracking-widest text-pink-400 hover:text-white transition-colors">
+                        <i className="fa-solid fa-download mr-1"></i> Download WAV
                       </a>
                     </div>
                   )}
                 </div>
+                
                 <div className="flex lg:flex-col gap-2 shrink-0 justify-center">
-                  <button disabled={block.isGenerating || !block.text.trim()} onClick={() => generateBlockAudio(block.id)} className="glass-btn px-4 py-2 rounded-xl text-xs font-medium flex-1 lg:flex-none flex items-center justify-center gap-2 text-pink-300 min-w-[120px]">
-                    <i className={block.isGenerating ? "fa-solid fa-spinner animate-spin" : "fa-solid fa-microphone-lines"}></i>
-                    {block.isGenerating ? 'Gerando...' : 'Gerar Áudio'}
+                  <button disabled={block.isGenerating || !block.text.trim()} onClick={() => generateBlockAudio(block.id)} className="glass-btn px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-pink-400 hover:text-white disabled:opacity-30 transition-all flex items-center justify-center gap-2 min-w-[120px]">
+                    {block.isGenerating ? <i className="fa-solid fa-circle-notch animate-spin"></i> : <i className="fa-solid fa-microphone-lines"></i>}
+                    {block.isGenerating ? 'Processando' : 'Gerar Áudio'}
                   </button>
-                  <button onClick={() => addBlock(block.id)} className="glass-btn px-4 py-2 rounded-xl text-xs font-medium flex-1 lg:flex-none flex items-center justify-center gap-2">
+                  <button onClick={() => addBlock(block.id)} className="glass-btn px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-white transition-all flex items-center justify-center gap-2">
                     <i className="fa-solid fa-plus"></i> Inserir Abaixo
                   </button>
-                  <button onClick={() => removeBlock(block.id)} className="glass-btn px-4 py-2 rounded-xl text-xs font-medium flex-1 lg:flex-none flex items-center justify-center gap-2 text-red-400/80 hover:text-red-400">
-                    <i className="fa-solid fa-trash"></i> Excluir
+                  <button onClick={() => removeBlock(block.id)} className="glass-btn px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest text-red-500/40 hover:text-red-500 hover:bg-red-500/10 transition-all flex items-center justify-center gap-2">
+                    <i className="fa-solid fa-trash-can"></i>
                   </button>
                 </div>
               </div>
             </div>
           ))}
-          <button onClick={() => addBlock()} className="w-full py-4 rounded-2xl border-2 border-dashed border-white/10 text-white/40 hover:text-white/80 hover:border-pink-500/30 hover:bg-white/5 transition-all flex items-center justify-center gap-3 group">
-            <i className="fa-solid fa-plus-circle text-xl group-hover:scale-125 transition-transform"></i>
-            <span className="font-medium tracking-wide">Inserir Novo Bloco</span>
+          <button onClick={() => addBlock()} className="w-full py-10 rounded-[3rem] border-2 border-dashed border-white/5 text-white/10 hover:text-pink-500/40 hover:border-pink-500/20 hover:bg-pink-500/5 transition-all flex flex-col items-center justify-center gap-3 group">
+            <i className="fa-solid fa-plus-circle text-5xl group-hover:scale-110 transition-transform"></i>
+            <span className="text-[10px] font-black uppercase tracking-[0.4em]">Adicionar Novo Bloco de Áudio</span>
           </button>
         </section>
       </main>
 
-      {/* Footer / Status Bar */}
-      <footer className="relative z-20 glass-card p-3 border-t border-white/10 flex justify-center items-center gap-4 text-[10px] text-white/40 uppercase tracking-[2px]">
-          <span>© Edson Automação 2024</span>
-          <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
-          <span>Gemini 2.5 Flash TTS</span>
+      <footer className="relative z-20 glass-card p-3 border-t border-white/5 flex justify-center items-center gap-6 text-[9px] text-white/20 uppercase font-black tracking-[0.5em]">
+          <span>EDSON AUTOMAÇÃO PREMIUM</span>
+          <div className="w-1 h-1 rounded-full bg-pink-500/50"></div>
+          <span>GEMINI 2.5 FLASH ENGINE</span>
       </footer>
     </div>
   );
