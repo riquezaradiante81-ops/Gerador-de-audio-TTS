@@ -16,8 +16,31 @@ export default function App() {
     seed: 42
   });
   const [isPlayingAll, setIsPlayingAll] = useState(false);
+  const [isKeyConfigured, setIsKeyConfigured] = useState<boolean | null>(null);
+  
   const currentAudioSource = useRef<AudioBufferSourceNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Verifica se a chave API já foi selecionada ao carregar
+  useEffect(() => {
+    const checkKey = async () => {
+      // @ts-ignore
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      setIsKeyConfigured(hasKey);
+    };
+    checkKey();
+  }, []);
+
+  const handleSelectKey = async () => {
+    try {
+      // @ts-ignore
+      await window.aistudio.openSelectKey();
+      // Assume sucesso após o trigger do diálogo conforme regras
+      setIsKeyConfigured(true);
+    } catch (err) {
+      console.error("Erro ao selecionar chave:", err);
+    }
+  };
 
   const getAudioContext = () => {
     if (!audioContextRef.current) {
@@ -112,10 +135,17 @@ export default function App() {
         isGenerating: false 
       } : b));
     } catch (error: any) {
+      const errorMessage = error.message || "Erro desconhecido";
+      
+      // Se o erro indicar que a entidade não foi encontrada ou problema de chave, reinicia o fluxo
+      if (errorMessage.includes("not found") || errorMessage.includes("API Key")) {
+        setIsKeyConfigured(false);
+      }
+
       setBlocks(prev => prev.map(b => b.id === id ? { 
         ...b, 
         isGenerating: false, 
-        error: error.message 
+        error: "Erro de API: Selecione uma chave válida no topo." 
       } : b));
     }
   }, [blocks, settings]);
@@ -189,7 +219,7 @@ export default function App() {
       source.connect(ctx.destination);
       source.start();
     } catch (e) {
-      console.error(e);
+      setIsKeyConfigured(false);
     } finally {
       setBlocks(prev => prev.filter(b => b.id !== 'preview'));
     }
@@ -200,32 +230,70 @@ export default function App() {
       {/* Background Elements */}
       <div className="fixed inset-0 bg-[length:400%_400%] animate-gradient-move bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-800 z-0"></div>
       
-      {/* Header Section (Fixed Top) */}
+      {/* Modal de Seleção de Chave API */}
+      {isKeyConfigured === false && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+          <div className="glass-card max-w-md w-full p-8 rounded-3xl text-center border-2 border-pink-500/30 animate-float">
+            <div className="w-20 h-20 bg-pink-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <i className="fa-solid fa-key text-3xl text-pink-500"></i>
+            </div>
+            <h2 className="text-2xl font-bold mb-4">Configuração Necessária</h2>
+            <p className="text-gray-300 mb-6 leading-relaxed">
+              Para gerar áudios com alta qualidade, você precisa selecionar uma <strong>Chave API paga</strong> do Google Cloud.
+            </p>
+            <div className="space-y-4">
+              <button 
+                onClick={handleSelectKey}
+                className="w-full bg-pink-600 hover:bg-pink-500 py-4 rounded-2xl font-bold text-lg shadow-xl shadow-pink-600/20 transition-all active:scale-95"
+              >
+                Selecionar Chave API
+              </button>
+              <a 
+                href="https://ai.google.dev/gemini-api/docs/billing" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="block text-xs text-pink-400 hover:underline opacity-60"
+              >
+                Saiba mais sobre o faturamento da API <i className="fa-solid fa-external-link ml-1"></i>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header Section */}
       <header className="relative z-20 w-full glass-card border-b border-white/20 p-4 shrink-0">
         <div className="max-w-7xl mx-auto flex flex-col items-center gap-4">
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-pink-100 to-white">
-            Edson Automação Gerador de Áudio TTS
-          </h1>
+          <div className="flex items-center justify-between w-full">
+            <div className="w-24 hidden md:block"></div>
+            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-pink-100 to-white">
+              Edson Automação Gerador de Áudio TTS
+            </h1>
+            <button 
+              onClick={handleSelectKey}
+              className={`text-[10px] px-3 py-1 rounded-full border flex items-center gap-2 transition-all ${isKeyConfigured ? 'border-green-500/50 text-green-400' : 'border-red-500/50 text-red-400'}`}
+            >
+              <div className={`w-1.5 h-1.5 rounded-full ${isKeyConfigured ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+              {isKeyConfigured ? 'API ATIVA' : 'CONFIGURAR API'}
+            </button>
+          </div>
+          
           <div className="flex flex-wrap justify-center gap-3 w-full max-w-4xl">
             <button onClick={generateAll} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">
-              <i className="fa-solid fa-wand-sparkles"></i>
-              Gerar Todos
+              <i className="fa-solid fa-wand-sparkles"></i> Gerar Todos
             </button>
             <button onClick={playAllSequentially} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">
               <i className={`fa-solid ${isPlayingAll ? 'fa-stop' : 'fa-play'}`}></i>
-              {isPlayingAll ? 'Interromper Reprodução' : 'Reproduzir Todos'}
+              {isPlayingAll ? 'Parar' : 'Ouvir Todos'}
             </button>
-            <button onClick={downloadZip} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">
-              <i className="fa-solid fa-file-zipper"></i>
-              Baixar Todos (.zip)
+            <button onClick={downloadZip} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-pink-300">
+              <i className="fa-solid fa-file-zipper"></i> ZIP
             </button>
-            <button onClick={downloadSingleTrack} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium">
-              <i className="fa-solid fa-file-audio"></i>
-              Baixar Faixa Única (.wav)
+            <button onClick={downloadSingleTrack} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-pink-300">
+              <i className="fa-solid fa-file-audio"></i> TRACK
             </button>
-            <button onClick={clearAll} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-red-300">
-              <i className="fa-solid fa-trash-can"></i>
-              Limpar Tudo
+            <button onClick={clearAll} className="glass-btn flex-1 min-w-[150px] py-2 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium text-red-400">
+              <i className="fa-solid fa-trash-can"></i> Limpar
             </button>
           </div>
         </div>
@@ -234,16 +302,15 @@ export default function App() {
       {/* Main Content Area */}
       <main className="relative z-10 flex flex-col md:flex-row flex-1 overflow-hidden h-full">
         
-        {/* Left Column: Settings - Overflow auto com scroll visível */}
+        {/* Left Column: Settings */}
         <aside className="w-full md:w-[320px] lg:w-[400px] glass-card border-r border-white/20 p-6 overflow-y-auto shrink-0 md:h-full">
           <h2 className="text-lg font-semibold mb-6 flex items-center gap-2 text-pink-300">
-            <i className="fa-solid fa-sliders"></i>
-            Configurações Globais
+            <i className="fa-solid fa-sliders"></i> Configurações
           </h2>
           
           <div className="space-y-6 pb-10">
             <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Seletor de Voz</label>
+              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Voz</label>
               <div className="flex gap-2">
                 <select 
                   value={settings.voice}
@@ -259,7 +326,7 @@ export default function App() {
             </div>
 
             <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Ritmo / Velocidade ({settings.speed.toFixed(2)}x)</label>
+              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Velocidade ({settings.speed.toFixed(2)}x)</label>
               <div className="flex items-center gap-3">
                 <button onClick={() => setSettings(s => ({...s, speed: Math.max(0.5, s.speed - 0.25)}))} className="glass-btn w-10 h-10 rounded-xl flex items-center justify-center">-</button>
                 <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden relative">
@@ -270,27 +337,27 @@ export default function App() {
             </div>
 
             <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Expressividade / Temperatura</label>
+              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Temperatura</label>
               <input type="range" min="0" max="3" step="0.5" value={settings.temperature} onChange={(e) => setSettings({...settings, temperature: parseFloat(e.target.value)})} className="w-full accent-pink-500 cursor-pointer h-2 bg-white/10 rounded-full appearance-none" />
               <div className="flex justify-between mt-2">
-                <span className="text-[10px] text-gray-500 italic">Mais Neutro</span>
-                <span className="text-[10px] text-gray-500 italic">Mais Emocional</span>
+                <span className="text-[10px] text-gray-500 italic">Neutro</span>
+                <span className="text-[10px] text-gray-500 italic">Emocional</span>
               </div>
             </div>
 
             <div>
-              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Estilo / Instrução</label>
-              <textarea value={settings.style} onChange={(e) => setSettings({...settings, style: e.target.value})} placeholder="Ex: Alegre, sério, sussurrando..." className="w-full h-20 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors resize-none" />
+              <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Estilo</label>
+              <textarea value={settings.style} onChange={(e) => setSettings({...settings, style: e.target.value})} placeholder="Ex: Alegre, sério..." className="w-full h-20 bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors resize-none" />
             </div>
 
             <div>
               <label className="block text-xs uppercase tracking-wider text-gray-400 mb-2">Sotaque</label>
-              <input type="text" value={settings.accent} onChange={(e) => setSettings({...settings, accent: e.target.value})} placeholder="Ex: Nordestino, Carioca, Português PT..." className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors" />
+              <input type="text" value={settings.accent} onChange={(e) => setSettings({...settings, accent: e.target.value})} placeholder="Ex: Carioca, Nordestino..." className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm outline-none focus:border-pink-500/50 transition-colors" />
             </div>
           </div>
         </aside>
 
-        {/* Right Column: Audio Blocks - Overflow auto com scroll visível */}
+        {/* Right Column: Audio Blocks */}
         <section className="flex-1 p-4 md:p-8 overflow-y-auto h-full space-y-6 pb-40">
           {blocks.map((block, index) => (
             <div key={block.id} className={`glass-card p-6 rounded-2xl border-t border-white/20 relative group transition-all duration-300 ${block.isGenerating ? 'animate-pulse' : ''}`}>
@@ -298,9 +365,9 @@ export default function App() {
                 <div className="flex-1 space-y-4">
                    <div className="flex items-center justify-between">
                      <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded-full text-gray-400 font-medium">TRECHO #{index + 1}</span>
-                     {block.error && <span className="text-[10px] text-red-400 font-medium"><i className="fa-solid fa-circle-exclamation mr-1"></i>{block.error}</span>}
+                     {block.error && <span className="text-[10px] text-red-400 font-medium bg-red-500/10 px-2 py-0.5 rounded-full"><i className="fa-solid fa-circle-exclamation mr-1"></i>{block.error}</span>}
                    </div>
-                   <textarea value={block.text} onChange={(e) => updateBlockText(block.id, e.target.value)} placeholder="Digite o texto que será narrado aqui..." className="w-full h-24 bg-transparent border-none outline-none text-white text-base placeholder:text-white/20 resize-none font-light leading-relaxed" />
+                   <textarea value={block.text} onChange={(e) => updateBlockText(block.id, e.target.value)} placeholder="Digite o texto aqui..." className="w-full h-24 bg-transparent border-none outline-none text-white text-base placeholder:text-white/20 resize-none font-light leading-relaxed" />
                   {block.audioUrl && (
                     <div className="flex flex-col sm:flex-row items-center gap-4 bg-white/5 p-3 rounded-xl border border-white/10 animate-fade-in">
                       <div className="flex items-center gap-3 flex-1 w-full">
@@ -314,7 +381,7 @@ export default function App() {
                         </div>
                       </div>
                       <a href={block.audioUrl} download={`audio_${index + 1}.wav`} className="glass-btn p-2 rounded-lg text-xs flex items-center gap-2">
-                        <i className="fa-solid fa-download"></i> Baixar Faixa
+                        <i className="fa-solid fa-download"></i> Baixar
                       </a>
                     </div>
                   )}
@@ -328,7 +395,7 @@ export default function App() {
                     <i className="fa-solid fa-plus"></i> Inserir Abaixo
                   </button>
                   <button onClick={() => removeBlock(block.id)} className="glass-btn px-4 py-2 rounded-xl text-xs font-medium flex-1 lg:flex-none flex items-center justify-center gap-2 text-red-400/80 hover:text-red-400">
-                    <i className="fa-solid fa-xmark"></i> Excluir Bloco
+                    <i className="fa-solid fa-trash"></i> Excluir
                   </button>
                 </div>
               </div>
@@ -336,16 +403,16 @@ export default function App() {
           ))}
           <button onClick={() => addBlock()} className="w-full py-4 rounded-2xl border-2 border-dashed border-white/10 text-white/40 hover:text-white/80 hover:border-pink-500/30 hover:bg-white/5 transition-all flex items-center justify-center gap-3 group">
             <i className="fa-solid fa-plus-circle text-xl group-hover:scale-125 transition-transform"></i>
-            <span className="font-medium tracking-wide">Inserir Novo Bloco ao Final</span>
+            <span className="font-medium tracking-wide">Inserir Novo Bloco</span>
           </button>
         </section>
       </main>
 
       {/* Footer / Status Bar */}
       <footer className="relative z-20 glass-card p-3 border-t border-white/10 flex justify-center items-center gap-4 text-[10px] text-white/40 uppercase tracking-[2px]">
-          <span>Feito Por Edson Automação</span>
-          <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
-          <span>API Gemini 2.5 Flash Ativa</span>
+          <span>© Edson Automação 2024</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-green-500"></div>
+          <span>Gemini 2.5 Flash TTS</span>
       </footer>
     </div>
   );
